@@ -1,0 +1,1353 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GA4 経路データ探索 | ひなたフェスアンケート分析</title>
+  
+  <!-- Tailwind CSS (v3.4.15 pinned) -->
+  <script src="https://cdn.tailwindcss.com/3.4.15"></script>
+  <!-- Google Fonts: Roboto & Google Sans style -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto:wght@300;400;500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+  <!-- D3.js & D3 Sankey -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3-sankey/0.12.3/d3-sankey.min.js"></script>
+  <!-- PapaParse for CSV parsing -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <!-- Lucide Icons (v0.454.0 pinned) -->
+  <script src="https://unpkg.com/lucide@0.454.0/dist/umd/lucide.min.js"></script>
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Google Sans"', '"Noto Sans JP"', 'Roboto', 'sans-serif'],
+          },
+          colors: {
+            ga: {
+              blue: '#1a73e8',
+              hover: '#1557b0',
+              bg: '#f8f9fa',
+              card: '#ffffff',
+              border: '#dadce0',
+              sidebar: '#f1f3f4',
+              text: '#3c4043',
+              muted: '#5f6368',
+              active: '#e8f0fe',
+              nodeBg: '#ffffff',
+              accent: '#e37400'
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    body {
+      font-family: 'Google Sans', 'Noto Sans JP', Roboto, sans-serif;
+      color: #3c4043;
+      background-color: #f8f9fa;
+      user-select: none;
+    }
+    
+    /* Custom scrollbar matching Google Analytics */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #dadce0;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #bdc1c6;
+    }
+
+    .sankey-link {
+      fill: none;
+      transition: stroke-opacity 0.25s ease, stroke 0.2s ease;
+    }
+    .sankey-link:hover {
+      stroke-opacity: 0.65 !important;
+    }
+
+    .node-bar {
+      transition: all 0.2s ease;
+      cursor: pointer;
+    }
+    .node-bar:hover {
+      filter: brightness(0.92);
+    }
+    .node-bar.is-selected {
+      outline: 2px solid #1a73e8;
+      outline-offset: 2px;
+    }
+
+    .tooltip-ga {
+      position: absolute;
+      pointer-events: none;
+      background: rgba(32, 33, 36, 0.94);
+      color: #fff;
+      font-size: 11px;
+      line-height: 1.4;
+      padding: 8px 12px;
+      border-radius: 6px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      z-index: 9999;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+
+    /* Subtle pulse animation for upload highlight */
+    @keyframes subtleGlow {
+      0%, 100% { border-color: #1a73e8; }
+      50% { border-color: #8ab4f8; }
+    }
+    .drop-active {
+      animation: subtleGlow 1.5s infinite;
+      background-color: #e8f0fe !important;
+    }
+  </style>
+</head>
+<body class="h-screen w-screen flex flex-col overflow-hidden bg-[#f8f9fa]">
+
+  <!-- Top GA4 Header -->
+  <header class="h-14 bg-white border-b border-ga-border px-4 flex items-center justify-between shrink-0 z-20">
+    <div class="flex items-center space-x-3">
+      <div class="w-8 h-8 rounded-lg bg-orange-500/10 flex items-center justify-center text-orange-600 font-bold">
+        <i data-lucide="git-branch" class="w-5 h-5 text-amber-600"></i>
+      </div>
+      <div>
+        <div class="flex items-center space-x-2">
+          <span class="text-xs font-semibold px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
+            経路データ探索
+          </span>
+          <span class="text-sm font-semibold text-gray-800 tracking-tight" id="reportTitle">
+            ひなたフェス2024・2026 E列「居住地」起点 参加者動線分析
+          </span>
+          <span class="text-[11px] px-1.5 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded font-medium" id="dataBadge">
+            サンプルデータ読込中
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Controls / Actions -->
+    <div class="flex items-center space-x-2">
+      <!-- File Upload Button -->
+      <label class="cursor-pointer flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition shadow-sm">
+        <i data-lucide="upload" class="w-3.5 h-3.5 text-gray-500"></i>
+        <span>CSV再アップロード</span>
+        <input type="file" id="csvFileInput" accept=".csv" class="hidden">
+      </label>
+
+      <!-- Reverse Flow Toggle -->
+      <button id="toggleReverseBtn" class="flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition shadow-sm" title="終点からの逆引き切り替え">
+        <i data-lucide="arrow-left-right" class="w-3.5 h-3.5 text-gray-500"></i>
+        <span>始点/終点 反転</span>
+      </button>
+
+      <!-- Reset Focus -->
+      <button id="resetPathBtn" class="flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition shadow-sm" title="フォーカス解除">
+        <i data-lucide="rotate-ccw" class="w-3.5 h-3.5 text-gray-500"></i>
+        <span>全経路を展開</span>
+      </button>
+
+      <!-- Export Button -->
+      <button id="exportCsvSummaryBtn" class="flex items-center space-x-1 px-3 py-1.5 text-xs font-medium rounded bg-ga-blue text-white hover:bg-ga-hover transition shadow-sm">
+        <i data-lucide="download" class="w-3.5 h-3.5"></i>
+        <span>集計エクスポート</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="flex flex-1 overflow-hidden">
+    
+    <!-- Left GA4 Panel (Variables & Settings) -->
+    <aside class="w-80 bg-white border-r border-ga-border flex flex-col shrink-0 overflow-y-auto text-xs select-none">
+      
+      <!-- Panel Header -->
+      <div class="p-3 border-b border-gray-200 flex items-center justify-between bg-gray-50/75">
+        <div class="flex items-center space-x-2">
+          <i data-lucide="sliders" class="w-4 h-4 text-ga-muted"></i>
+          <span class="font-bold text-gray-700 uppercase tracking-wider text-[11px]">変数とタブの設定</span>
+        </div>
+        <span class="text-[10px] text-gray-400">GA4 Exploration</span>
+      </div>
+
+      <!-- Quick Metrics Summary Bar -->
+      <div class="p-3 bg-blue-50/40 border-b border-gray-200">
+        <div class="text-[11px] text-gray-500 font-medium mb-1">総有効サンプル（回答者数）</div>
+        <div class="text-2xl font-bold text-gray-900 flex items-baseline gap-1" id="totalCountDisplay">
+          0 <span class="text-xs font-normal text-gray-500">人</span>
+        </div>
+        <div class="text-[11px] text-gray-500 mt-1 flex justify-between">
+          <span>宮崎県外比率: <b class="text-ga-blue" id="outsideMiyazakiRatio">--%</b></span>
+          <span>最大流入: <b class="text-gray-800" id="topRegionLabel">--</b></span>
+        </div>
+      </div>
+
+      <!-- Segment Filter -->
+      <div class="p-3 border-b border-gray-200">
+        <label class="block font-bold text-gray-700 mb-1 flex items-center justify-between">
+          <span>セグメント比較 (フィルタ)</span>
+          <i data-lucide="filter" class="w-3 h-3 text-gray-400"></i>
+        </label>
+        <select id="segmentSelect" class="w-full bg-white border border-gray-300 rounded p-1.5 text-xs text-gray-700 focus:ring-1 focus:ring-ga-blue focus:border-ga-blue outline-none">
+          <option value="ALL">すべての回答者 (全データ)</option>
+          <option value="OUTSIDE">宮崎県外からの遠征客のみ</option>
+          <option value="INSIDE">宮崎県内在住のおひさまのみ</option>
+          <option value="HOTEL">宿泊を伴う来場者</option>
+          <option value="DAYTRIP">日帰り来場者</option>
+          <option value="REPEAT">次回も参加したい回答者</option>
+        </select>
+      </div>
+
+      <!-- Column E Level Selection (始点の粒度) -->
+      <div class="p-3 border-b border-gray-200 bg-orange-50/20">
+        <label class="block font-bold text-gray-800 mb-1 flex items-center justify-between">
+          <span class="flex items-center gap-1.5 text-amber-800">
+            <i data-lucide="map-pin" class="w-3.5 h-3.5"></i>
+            E列: 居住地 分類の粒度
+          </span>
+        </label>
+        <div class="space-y-1.5 mt-2">
+          <label class="flex items-center space-x-2 text-gray-700 cursor-pointer">
+            <input type="radio" name="residenceGranularity" value="region" checked class="text-ga-blue focus:ring-0">
+            <span>地方ブロック区分 (関東, 近畿, 九州など 8区分)</span>
+          </label>
+          <label class="flex items-center space-x-2 text-gray-700 cursor-pointer">
+            <input type="radio" name="residenceGranularity" value="prefecture" class="text-ga-blue focus:ring-0">
+            <span>都道府県詳細 (上位+その他)</span>
+          </label>
+        </div>
+        <p class="text-[10px] text-gray-500 mt-1.5">
+          ※ E列の生データから自動で地方判定＆正規化を行っています。
+        </p>
+      </div>
+
+      <!-- Steps Dimension Selectors -->
+      <div class="p-3 border-b border-gray-200">
+        <div class="font-bold text-gray-700 mb-2 flex items-center justify-between">
+          <span>ステップのディメンション設定</span>
+          <span class="text-[10px] text-gray-400">順序変更可能</span>
+        </div>
+
+        <div class="space-y-2.5" id="stepConfigList">
+          <!-- Step 1 (Fixed to Column E Residence) -->
+          <div class="bg-gray-50 p-2 rounded border border-gray-200">
+            <div class="text-[10px] font-semibold text-gray-500 uppercase mb-1 flex items-center justify-between">
+              <span>始点 (Step 0)</span>
+              <span class="bg-blue-100 text-blue-800 text-[9px] px-1 rounded">E列固定</span>
+            </div>
+            <div class="font-medium text-gray-800 text-xs flex items-center gap-1">
+              <i data-lucide="compass" class="w-3.5 h-3.5 text-ga-blue"></i>
+              <span id="step0Label">居住地（地方ブロック）</span>
+            </div>
+          </div>
+
+          <!-- Step 2 -->
+          <div class="bg-white p-2 rounded border border-gray-200 shadow-sm">
+            <div class="text-[10px] font-semibold text-gray-500 uppercase mb-1">ステップ 1 (移動)</div>
+            <select class="step-dim-selector w-full bg-white border border-gray-300 rounded p-1 text-xs" data-step="1">
+              <option value="transport" selected>交通手段 (飛行機/新幹線/車/バス等)</option>
+              <option value="schedule">参加日程 (Day1/Day2/両日)</option>
+              <option value="stayType">宿泊形態 (市内ホテル/青島/日帰り等)</option>
+              <option value="venueAccess">スタジアムアクセス (シャトル/JR/P&R)</option>
+              <option value="satisfaction">フェス総合満足度</option>
+            </select>
+          </div>
+
+          <!-- Step 3 -->
+          <div class="bg-white p-2 rounded border border-gray-200 shadow-sm">
+            <div class="text-[10px] font-semibold text-gray-500 uppercase mb-1">ステップ 2 (宿泊・日程)</div>
+            <select class="step-dim-selector w-full bg-white border border-gray-300 rounded p-1 text-xs" data-step="2">
+              <option value="schedule">参加日程 (Day1/Day2/両日)</option>
+              <option value="stayType" selected>宿泊形態・宿泊エリア</option>
+              <option value="transport">交通手段</option>
+              <option value="venueAccess">スタジアムアクセス (シャトル/JR/P&R)</option>
+              <option value="sightseeing">県内立ち寄り観光地</option>
+              <option value="satisfaction">フェス総合満足度</option>
+            </select>
+          </div>
+
+          <!-- Step 4 -->
+          <div class="bg-white p-2 rounded border border-gray-200 shadow-sm">
+            <div class="text-[10px] font-semibold text-gray-500 uppercase mb-1">ステップ 3 (会場アクセス)</div>
+            <select class="step-dim-selector w-full bg-white border border-gray-300 rounded p-1 text-xs" data-step="3">
+              <option value="venueAccess" selected>スタジアムアクセス (シャトル/JR/P&R)</option>
+              <option value="stayType">宿泊形態・エリア</option>
+              <option value="sightseeing">県内立ち寄り観光地</option>
+              <option value="satisfaction">フェス総合満足度</option>
+              <option value="none">-- なし（このステップで終了） --</option>
+            </select>
+          </div>
+
+          <!-- Step 5 -->
+          <div class="bg-white p-2 rounded border border-gray-200 shadow-sm">
+            <div class="text-[10px] font-semibold text-gray-500 uppercase mb-1">ステップ 4 (成果・満足度)</div>
+            <select class="step-dim-selector w-full bg-white border border-gray-300 rounded p-1 text-xs" data-step="4">
+              <option value="satisfaction" selected>フェス総合満足度 / 次回参加意向</option>
+              <option value="sightseeing">県内立ち寄り観光地</option>
+              <option value="goodsBudget">現地グッズ・飲食消費額</option>
+              <option value="none">-- なし（このステップで終了） --</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Visual Options -->
+      <div class="p-3 border-b border-gray-200 space-y-2">
+        <div class="font-bold text-gray-700 text-[11px] uppercase">表示オプション</div>
+        <div class="flex items-center justify-between text-gray-600">
+          <span>ノード最大表示数 / ステップ</span>
+          <select id="nodeLimitSelect" class="bg-white border border-gray-300 rounded px-1.5 py-0.5 text-xs">
+            <option value="5">上位 5 件</option>
+            <option value="7" selected>上位 7 件</option>
+            <option value="10">上位 10 件</option>
+            <option value="20">すべて</option>
+          </select>
+        </div>
+        <div class="flex items-center justify-between text-gray-600">
+          <span>「その他・未回答」ノードの表示</span>
+          <input type="checkbox" id="showDropoffs" checked class="text-ga-blue rounded cursor-pointer">
+        </div>
+      </div>
+
+      <!-- File Mapping Status -->
+      <div class="p-3 mt-auto bg-gray-50 text-[11px] text-gray-500 border-t border-gray-200">
+        <div class="font-semibold text-gray-700 mb-1 flex items-center gap-1">
+          <i data-lucide="database" class="w-3 h-3 text-gray-400"></i>
+          <span>列マッピング状態</span>
+        </div>
+        <div id="colMappingInfo" class="text-[10px] leading-relaxed text-gray-600 space-y-0.5">
+          <div>E列 (Index 4): <span class="text-blue-700 font-medium">居住地 / 都道府県</span></div>
+          <div>自動抽出列数: <span class="font-medium" id="colCountText">9 列</span></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Exploration Area (GA4 Canvas) -->
+    <main class="flex-1 flex flex-col min-w-0 bg-[#f8f9fa] overflow-hidden relative" id="dropZoneArea">
+      
+      <!-- Drag & Drop overlay notification -->
+      <div id="dragDropOverlay" class="absolute inset-0 bg-blue-50/90 z-50 border-4 border-dashed border-ga-blue flex flex-col items-center justify-center pointer-events-none hidden transition-all">
+        <i data-lucide="file-spreadsheet" class="w-16 h-16 text-ga-blue mb-3 animate-bounce"></i>
+        <p class="text-lg font-bold text-gray-800">CSVファイルをここにドロップしてください</p>
+        <p class="text-sm text-gray-500 mt-1">「ひなたフェスアンケート_回答...csv」のE列（居住地）を自動解析します</p>
+      </div>
+
+      <!-- Top Action / Context Breadcrumb Bar -->
+      <div class="h-10 border-b border-ga-border bg-white px-4 flex items-center justify-between shrink-0 text-xs">
+        <div class="flex items-center space-x-2 text-gray-600 overflow-x-auto py-1">
+          <span class="text-gray-400">探索パス:</span>
+          <div id="activeFilterPathBadge" class="flex items-center gap-1.5">
+            <span class="px-2 py-0.5 bg-gray-100 rounded text-gray-700 text-[11px] font-medium flex items-center gap-1">
+              <span>全ノード表示中</span>
+            </span>
+          </div>
+        </div>
+
+        <div class="flex items-center space-x-3 text-gray-500 text-[11px]">
+          <div class="flex items-center space-x-1">
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block"></span>
+            <span>高満足 (90%+)</span>
+          </div>
+          <div class="flex items-center space-x-1">
+            <span class="w-2.5 h-2.5 rounded-full bg-blue-500 inline-block"></span>
+            <span>通常フロー</span>
+          </div>
+          <div class="flex items-center space-x-1">
+            <span class="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block"></span>
+            <span>注視ノード</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sankey & Nodes Container -->
+      <div class="flex-1 relative overflow-auto p-4 flex flex-col" id="canvasScrollWrapper">
+        
+        <!-- Step Column Headers (GA4 Style) -->
+        <div id="stepHeaderContainer" class="flex items-center mb-2 min-w-[960px] select-none">
+          <!-- Dynamically populated step headers -->
+        </div>
+
+        <!-- SVG Container for Path Exploration -->
+        <div class="flex-1 min-h-[580px] min-w-[960px] relative bg-white rounded-lg border border-ga-border shadow-sm overflow-hidden">
+          <svg id="sankeySvg" class="w-full h-full block"></svg>
+          
+          <!-- Loading / Empty overlay -->
+          <div id="chartLoadingIndicator" class="absolute inset-0 bg-white/70 flex items-center justify-center hidden">
+            <div class="flex flex-col items-center space-x-2">
+              <div class="w-8 h-8 border-2 border-ga-blue border-t-transparent rounded-full animate-spin mb-2"></div>
+              <span class="text-xs text-gray-600 font-medium">経路を再計算しています...</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom Status & Insights Bar -->
+      <div class="h-10 bg-white border-t border-ga-border px-4 flex items-center justify-between shrink-0 text-xs text-gray-600">
+        <div class="flex items-center space-x-3" id="insightStatsText">
+          <i data-lucide="lightbulb" class="w-4 h-4 text-amber-500"></i>
+          <span>ノードをクリックすると、その居住地または経路に絞り込んだ詳細探索を行えます。</span>
+        </div>
+        <div class="text-[11px] text-gray-400">
+          GA4 Path Exploration Engine • Hinata Fes Analyzer
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Custom Tooltip -->
+  <div id="gaTooltip" class="tooltip-ga"></div>
+
+  <script>
+    /* ==========================================================
+       0. SECURITY UTILITIES
+       ========================================================== */
+    function escapeHtml(str) {
+      if (str === null || str === undefined) return '';
+      return String(str).replace(/[&<>"']/g, s => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[s]));
+    }
+
+    function isDropoffLabel(label) {
+      if (!label) return true;
+      return label === 'その他' || label.includes('未回答') || label.includes('不明') || label === 'なし';
+    }
+
+    /* ==========================================================
+       1. STATE & DATA INITIALIZATION
+       ========================================================== */
+    const STATE = {
+      rawData: [],
+      filteredData: [],
+      columnNames: [],
+      columnIndices: {
+        residence: 4, // E column default (0-indexed: 4)
+        transport: 5,
+        schedule: 6,
+        stayType: 7,
+        venueAccess: 8,
+        sightseeing: 9,
+        satisfaction: 10,
+        goodsBudget: 11
+      },
+      granularity: 'region', // 'region' or 'prefecture'
+      selectedSegment: 'ALL',
+      nodeLimit: 7,
+      showDropoffs: true,
+      reversePath: false,
+      focusFilter: null, // { stepKey, stepTitle, nodeName }
+      steps: [
+        { id: 0, key: 'residence', title: '居住地 (E列)' },
+        { id: 1, key: 'transport', title: '交通手段' },
+        { id: 2, key: 'stayType', title: '宿泊エリア' },
+        { id: 3, key: 'venueAccess', title: '会場アクセス' },
+        { id: 4, key: 'satisfaction', title: '満足度' }
+      ]
+    };
+
+    // Regional mapping for Japanese Prefectures
+    const REGION_MAP = {
+      '九州・沖縄': ['宮崎県', '福岡県', '鹿児島県', '熊本県', '大分県', '長崎県', '佐賀県', '沖縄県', '宮崎', '福岡', '鹿児島', '熊本', '大分', '長崎', '佐賀', '沖縄'],
+      '関東': ['東京都', '神奈川県', '埼玉県', '千葉県', '茨城県', '栃木県', '群馬県', '東京', '神奈川', '埼玉', '千葉', '茨城', '栃木', '群馬'],
+      '近畿': ['大阪府', '兵庫県', '京都府', '滋賀県', '奈良県', '和歌山県', '大阪', '兵庫', '京都', '滋賀', '奈良', '和歌山'],
+      '中部': ['愛知県', '静岡県', '岐阜県', '三重県', '長野県', '山梨県', '新潟県', '富山県', '石川県', '福井県', '愛知', '静岡', '岐阜', '三重', '長野', '山梨', '新潟', '富山', '石川', '福井'],
+      '中国': ['広島県', '岡山県', '山口県', '鳥取県', '島根県', '広島', '岡山', '山口', '鳥取', '島根'],
+      '四国': ['香川県', '愛媛県', '徳島県', '高知県', '香川', '愛媛', '徳島', '高知'],
+      '東北': ['宮城県', '福島県', '青森県', '岩手県', '山形県', '秋田県', '宮城', '福島', '青森', '岩手', '山形', '秋田'],
+      '北海道': ['北海道']
+    };
+
+    function getRegionFromPref(prefStr) {
+      if (!prefStr) return 'その他・未回答';
+      const clean = prefStr.trim();
+      if (clean.includes('宮崎')) return '宮崎県内';
+      for (const [region, prefs] of Object.entries(REGION_MAP)) {
+        if (prefs.some(p => clean.startsWith(p) || clean.includes(p))) {
+          if (region === '九州・沖縄') return '九州他県 (宮崎県外)';
+          return region;
+        }
+      }
+      return 'その他・海外';
+    }
+
+    function normalizePrefecture(prefStr) {
+      if (!prefStr) return '未回答';
+      let p = prefStr.trim();
+      const standardSuffixes = ['都', '道', '府', '県'];
+      for (const [_, prefs] of Object.entries(REGION_MAP)) {
+        for (const valid of prefs) {
+          if (p === valid || p.startsWith(valid)) {
+            const fullName = prefs.find(x => standardSuffixes.some(s => x.endsWith(s)) && x.startsWith(p.slice(0, 2)));
+            return fullName || p;
+          }
+        }
+      }
+      return p.length > 6 ? p.slice(0, 6) : p;
+    }
+
+    /**
+     * Generates realistic Hinata Fes 2024 / 2026 attendee survey mock data
+     */
+    function generateHinataFesMockData(count = 1250) {
+      const data = [];
+      const prefProb = [
+        { pref: '宮崎県', weight: 26, region: '宮崎県内' },
+        { pref: '東京都', weight: 22, region: '関東' },
+        { pref: '神奈川県', weight: 11, region: '関東' },
+        { pref: '大阪府', weight: 9, region: '近畿' },
+        { pref: '福岡県', weight: 10, region: '九州他県 (宮崎県外)' },
+        { pref: '愛知県', weight: 6, region: '中部' },
+        { pref: '埼玉県', weight: 5, region: '関東' },
+        { pref: '兵庫県', weight: 4, region: '近畿' },
+        { pref: '千葉県', weight: 4, region: '関東' },
+        { pref: '鹿児島県', weight: 3, region: '九州他県 (宮崎県外)' }
+      ];
+
+      function chooseWeighted(list) {
+        let total = list.reduce((s, i) => s + i.weight, 0);
+        let r = Math.random() * total;
+        for (let item of list) {
+          if (r < item.weight) return item;
+          r -= item.weight;
+        }
+        return list[0];
+      }
+
+      for (let i = 1; i <= count; i++) {
+        const prefObj = chooseWeighted(prefProb);
+        const isMiyazaki = prefObj.pref === '宮崎県';
+        const isKanto = prefObj.region === '関東';
+        const isKansai = prefObj.region === '近畿';
+        const isKyushu = prefObj.region === '九州他県 (宮崎県外)';
+
+        const schedRand = Math.random();
+        const schedule = schedRand < 0.58 ? '両日参加 (Day1+Day2)' : (schedRand < 0.82 ? 'Day1 のみ' : 'Day2 のみ');
+
+        let transport = '自家用車・レンタカー';
+        if (isMiyazaki) {
+          transport = Math.random() < 0.75 ? '自家用車' : (Math.random() < 0.7 ? 'JR日南線/臨時列車' : '直行シャトルバス');
+        } else if (isKanto) {
+          transport = Math.random() < 0.88 ? '飛行機 (羽田/成田→宮崎)' : '新幹線＋高速バス/特急';
+        } else if (isKansai) {
+          transport = Math.random() < 0.65 ? '飛行機 (伊丹/関空→宮崎)' : (Math.random() < 0.6 ? '新幹線＋特急ひゅうが' : 'カーフェリー (神戸→宮崎)');
+        } else if (isKyushu) {
+          transport = Math.random() < 0.55 ? '高速バス (B&Sみやざき等)' : (Math.random() < 0.65 ? '自家用車' : 'JR特急きりしま/にちりん');
+        }
+
+        let stay = '宮崎市内ホテル';
+        if (isMiyazaki) {
+          stay = Math.random() < 0.85 ? '自宅 (日帰り)' : '宮崎市内ホテル';
+        } else {
+          const rStay = Math.random();
+          if (rStay < 0.54) stay = '宮崎市内ホテル・民宿';
+          else if (rStay < 0.72) stay = '青島・日南エリアリゾート';
+          else if (rStay < 0.84) stay = '延岡・日向・都城エリア';
+          else if (rStay < 0.94) stay = 'キャンプ・車中泊';
+          else stay = '日帰り強行';
+        }
+
+        let venueAccess = '宮崎駅直行シャトルバス';
+        if (stay.includes('自宅') || transport.includes('自家用車')) {
+          venueAccess = Math.random() < 0.5 ? 'パーク＆ライド (駐車場+バス)' : 'JR木花駅・運動公園駅利用';
+        } else if (stay.includes('青島')) {
+          venueAccess = Math.random() < 0.6 ? 'JR日南線・臨時列車' : '青島連絡バス/徒歩';
+        } else {
+          venueAccess = Math.random() < 0.7 ? '宮崎駅直行シャトルバス' : 'JR木花駅利用';
+        }
+
+        const sightRand = Math.random();
+        let sight = '青島神社・鬼の洗濯板';
+        if (sightRand < 0.35) sight = '青島神社・鬼の洗濯板';
+        else if (sightRand < 0.60) sight = 'みやざき物産館・一番街グルメ';
+        else if (sightRand < 0.80) sight = 'サンメッセ日南・鵜戸神宮';
+        else if (sightRand < 0.92) sight = '高千穂峡・日向岬';
+        else sight = 'スタジアム直行直帰';
+
+        const satRand = Math.random();
+        let sat = '大変満足 (次回も絶対参加)';
+        if (satRand < 0.78) sat = '大変満足 (次回も絶対参加)';
+        else if (satRand < 0.93) sat = '満足 (楽しめた)';
+        else if (satRand < 0.98) sat = '普通';
+        else sat = '改善を望む (混雑・アクセス)';
+
+        const spendRand = Math.random();
+        let spend = '3万円〜5万円';
+        if (spendRand < 0.2) spend = '1万円未満';
+        else if (spendRand < 0.5) spend = '1万円〜3万円';
+        else if (spendRand < 0.85) spend = '3万円〜5万円';
+        else spend = '5万円以上 (飲食・グッズ含)';
+
+        data.push({
+          id: i,
+          timestamp: `2026/09/09 13:${(10 + (i % 50)).toString().padStart(2, '0')}`,
+          name: `回答者_${i}`,
+          residence: prefObj.pref,
+          transport,
+          schedule,
+          stayType: stay,
+          venueAccess,
+          sightseeing: sight,
+          satisfaction: sat,
+          goodsBudget: spend
+        });
+      }
+      return data;
+    }
+
+    /**
+     * Parse uploaded CSV file with encoding protection (UTF-8 & Shift-JIS)
+     */
+    function handleCsvUpload(file) {
+      if (!file) return;
+      
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const text = e.target.result;
+        if (text.includes('\uFFFD')) {
+          const sjisReader = new FileReader();
+          sjisReader.onload = function(evt) {
+            parseCsvString(evt.target.result, file.name);
+          };
+          sjisReader.readAsText(file, 'Shift_JIS');
+        } else {
+          parseCsvString(text, file.name);
+        }
+      };
+      reader.readAsText(file, 'UTF-8');
+    }
+
+    function parseCsvString(csvString, fileName = 'アップロードファイル') {
+      document.getElementById('chartLoadingIndicator').classList.remove('hidden');
+      
+      Papa.parse(csvString, {
+        header: false,
+        skipEmptyLines: true,
+        complete: function(results) {
+          if (!results.data || results.data.length < 2) {
+            showToast('CSVデータが不足しているか読み込めませんでした。', 'error');
+            document.getElementById('chartLoadingIndicator').classList.add('hidden');
+            return;
+          }
+
+          const rows = results.data;
+          const headers = rows[0].map(h => String(h).trim());
+          STATE.columnNames = headers;
+          
+          let resIdx = 4;
+          const detectedIdx = headers.findIndex(h => h.includes('居住') || h.includes('住まい') || h.includes('都道府県') || h.includes('住所'));
+          if (detectedIdx !== -1) resIdx = detectedIdx;
+
+          const transportIdx = headers.findIndex(h => h.includes('交通') || h.includes('移動'));
+          const schedIdx = headers.findIndex(h => h.includes('日程') || h.includes('参加日') || h.includes('Day'));
+          const stayIdx = headers.findIndex(h => h.includes('宿泊') || h.includes('泊'));
+          const venueIdx = headers.findIndex(h => h.includes('アクセス') || h.includes('シャトル') || h.includes('会場'));
+          const satIdx = headers.findIndex(h => h.includes('満足') || h.includes('次回') || h.includes('評価'));
+          const sightIdx = headers.findIndex(h => h.includes('観光') || h.includes('立ち寄り'));
+
+          STATE.columnIndices = {
+            residence: resIdx,
+            transport: transportIdx !== -1 ? transportIdx : 5,
+            schedule: schedIdx !== -1 ? schedIdx : 6,
+            stayType: stayIdx !== -1 ? stayIdx : 7,
+            venueAccess: venueIdx !== -1 ? venueIdx : 8,
+            sightseeing: sightIdx !== -1 ? sightIdx : 9,
+            satisfaction: satIdx !== -1 ? satIdx : 10,
+            goodsBudget: 11
+          };
+
+          const parsed = [];
+          for (let r = 1; r < rows.length; r++) {
+            const row = rows[r];
+            if (!row || row.length <= resIdx) continue;
+            
+            const rawPref = row[resIdx] ? String(row[resIdx]).trim() : '';
+            if (!rawPref) continue;
+
+            parsed.push({
+              id: r,
+              residence: rawPref,
+              transport: (row[STATE.columnIndices.transport] || 'その他・未回答').trim(),
+              schedule: (row[STATE.columnIndices.schedule] || '未回答').trim(),
+              stayType: (row[STATE.columnIndices.stayType] || '未回答').trim(),
+              venueAccess: (row[STATE.columnIndices.venueAccess] || '未回答').trim(),
+              sightseeing: (row[STATE.columnIndices.sightseeing] || 'なし/未回答').trim(),
+              satisfaction: (row[STATE.columnIndices.satisfaction] || '未回答').trim(),
+              goodsBudget: (row[STATE.columnIndices.goodsBudget] || '未回答').trim()
+            });
+          }
+
+          if (parsed.length === 0) {
+            showToast('有効な回答行（E列: 居住地）が見つかりませんでした。', 'error');
+            document.getElementById('chartLoadingIndicator').classList.add('hidden');
+            return;
+          }
+
+          STATE.rawData = parsed;
+          STATE.focusFilter = null;
+          document.getElementById('reportTitle').innerText = `${fileName} - E列「居住地」起点 経路探索`;
+          document.getElementById('dataBadge').innerText = `${parsed.length} 件 読込完了`;
+          document.getElementById('dataBadge').className = 'text-[11px] px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded font-medium';
+          
+          document.getElementById('colCountText').innerText = `${headers.length} 列 (E列: [${headers[resIdx] || '居住地'}])`;
+          
+          applyFiltersAndRender();
+          showToast(`${parsed.length}件のデータを正常に解析しました`, 'success');
+        },
+        error: function(err) {
+          showToast('CSVのパース中にエラーが発生しました: ' + err.message, 'error');
+          document.getElementById('chartLoadingIndicator').classList.add('hidden');
+        }
+      });
+    }
+
+    /**
+     * Filters raw records based on active GA4 segment & focus paths
+     */
+    function applyFiltersAndRender() {
+      let data = [...STATE.rawData];
+
+      // Segment filter
+      if (STATE.selectedSegment === 'OUTSIDE') {
+        data = data.filter(d => !d.residence.includes('宮崎'));
+      } else if (STATE.selectedSegment === 'INSIDE') {
+        data = data.filter(d => d.residence.includes('宮崎'));
+      } else if (STATE.selectedSegment === 'HOTEL') {
+        data = data.filter(d => d.stayType.includes('ホテル') || d.stayType.includes('民宿') || d.stayType.includes('宿泊') || d.stayType.includes('リゾート'));
+      } else if (STATE.selectedSegment === 'DAYTRIP') {
+        data = data.filter(d => d.stayType.includes('日帰り') || d.stayType.includes('自宅'));
+      } else if (STATE.selectedSegment === 'REPEAT') {
+        data = data.filter(d => d.satisfaction.includes('大変満足') || d.satisfaction.includes('次回') || d.satisfaction.includes('満足'));
+      }
+
+      // Single path focus filter using stepKey (safe across reverse path toggles)
+      if (STATE.focusFilter) {
+        const { stepKey, nodeName } = STATE.focusFilter;
+        data = data.filter(d => getDimensionValue(d, stepKey) === nodeName);
+      }
+
+      STATE.filteredData = data;
+
+      updateMetricsKPIs(data);
+      renderSankeyChart();
+    }
+
+    function updateMetricsKPIs(data) {
+      const total = data.length;
+      document.getElementById('totalCountDisplay').innerHTML = `${total.toLocaleString()} <span class="text-xs font-normal text-gray-500">人</span>`;
+      
+      const outsideCount = data.filter(d => !d.residence.includes('宮崎')).length;
+      const outsidePct = total > 0 ? ((outsideCount / total) * 100).toFixed(1) : 0;
+      document.getElementById('outsideMiyazakiRatio').innerText = `${outsidePct}% (${outsideCount.toLocaleString()}人)`;
+
+      const counts = {};
+      data.forEach(d => {
+        const reg = getRegionFromPref(d.residence);
+        counts[reg] = (counts[reg] || 0) + 1;
+      });
+      let topReg = 'なし';
+      let maxC = 0;
+      for (const [r, c] of Object.entries(counts)) {
+        if (c > maxC) { maxC = c; topReg = r; }
+      }
+      document.getElementById('topRegionLabel').innerText = `${topReg} (${maxC}人)`;
+
+      // Active breadcrumb (XSS escaped)
+      const filterBadge = document.getElementById('activeFilterPathBadge');
+      if (STATE.focusFilter) {
+        const safeStepName = escapeHtml(STATE.focusFilter.stepTitle || 'ステップ');
+        const safeNodeName = escapeHtml(STATE.focusFilter.nodeName);
+        filterBadge.innerHTML = `
+          <span class="px-2 py-0.5 bg-blue-100 text-blue-800 rounded font-medium flex items-center gap-1 border border-blue-200">
+            <span>${safeStepName}: <b>${safeNodeName}</b> にフォーカス中 (${total}人)</span>
+            <button onclick="clearFocusFilter()" class="hover:text-blue-950 font-bold ml-1">✕</button>
+          </span>
+        `;
+      } else {
+        filterBadge.innerHTML = `
+          <span class="px-2 py-0.5 bg-gray-100 rounded text-gray-700 text-[11px] font-medium flex items-center gap-1">
+            <i data-lucide="layers" class="w-3 h-3 text-gray-500"></i>
+            <span>全ノード表示 (${total} 件)</span>
+          </span>
+        `;
+      }
+      lucide.createIcons();
+    }
+
+    function getDimensionValue(row, key) {
+      if (key === 'residence') {
+        if (STATE.granularity === 'region') {
+          return getRegionFromPref(row.residence);
+        } else {
+          return normalizePrefecture(row.residence);
+        }
+      }
+      return row[key] || '未回答';
+    }
+
+    /**
+     * Main D3 Sankey generation for GA4 Path Exploration
+     */
+    function renderSankeyChart() {
+      const svg = d3.select('#sankeySvg');
+      svg.selectAll('*').remove();
+
+      const container = document.getElementById('canvasScrollWrapper');
+      const width = Math.max(980, container.clientWidth - 32);
+      const height = Math.max(540, container.clientHeight - 80);
+      svg.attr('width', width).attr('height', height);
+
+      let activeSteps = STATE.steps.filter(s => s.key !== 'none');
+      if (STATE.reversePath) {
+        activeSteps = [...activeSteps].reverse();
+      }
+
+      renderStepHeaders(activeSteps, width);
+
+      const data = STATE.filteredData;
+      if (data.length === 0) {
+        svg.append('text')
+          .attr('x', width / 2)
+          .attr('y', height / 2)
+          .attr('text-anchor', 'middle')
+          .attr('fill', '#80868b')
+          .attr('font-size', '14px')
+          .text('該当するアンケート回答データがありません。条件を変更してください。');
+        document.getElementById('chartLoadingIndicator').classList.add('hidden');
+        return;
+      }
+
+      // 1. Build Nodes & Links between adjacent active steps
+      const nodeMap = new Map();
+      const linksMap = new Map();
+
+      function getNodeId(stepIdx, name) {
+        return `step_${stepIdx}::${name}`;
+      }
+
+      // First pass: collect node frequencies per step to apply top-N limits
+      const stepFreq = activeSteps.map(() => new Map());
+      data.forEach(row => {
+        activeSteps.forEach((step, sIdx) => {
+          const val = getDimensionValue(row, step.key);
+          const map = stepFreq[sIdx];
+          map.set(val, (map.get(val) || 0) + 1);
+        });
+      });
+
+      const stepAllowed = activeSteps.map((_, sIdx) => {
+        const sorted = Array.from(stepFreq[sIdx].entries()).sort((a, b) => b[1] - a[1]);
+        return new Set(sorted.slice(0, STATE.nodeLimit).map(d => d[0]));
+      });
+
+      // Second pass: group records and build flows
+      data.forEach(row => {
+        for (let s = 0; s < activeSteps.length - 1; s++) {
+          let sourceVal = getDimensionValue(row, activeSteps[s].key);
+          let targetVal = getDimensionValue(row, activeSteps[s + 1].key);
+
+          if (!stepAllowed[s].has(sourceVal)) sourceVal = 'その他';
+          if (!stepAllowed[s + 1].has(targetVal)) targetVal = 'その他';
+
+          // Hide dropoff / 'その他' nodes if unchecked
+          if (!STATE.showDropoffs) {
+            if (isDropoffLabel(sourceVal) || isDropoffLabel(targetVal)) {
+              continue;
+            }
+          }
+
+          const sNodeId = getNodeId(s, sourceVal);
+          const tNodeId = getNodeId(s + 1, targetVal);
+
+          if (!nodeMap.has(sNodeId)) {
+            nodeMap.set(sNodeId, {
+              id: sNodeId,
+              name: sourceVal,
+              stepIndex: s,
+              stepKey: activeSteps[s].key,
+              stepTitle: activeSteps[s].title,
+              value: 0
+            });
+          }
+          if (!nodeMap.has(tNodeId)) {
+            nodeMap.set(tNodeId, {
+              id: tNodeId,
+              name: targetVal,
+              stepIndex: s + 1,
+              stepKey: activeSteps[s + 1].key,
+              stepTitle: activeSteps[s + 1].title,
+              value: 0
+            });
+          }
+
+          const linkKey = `${sNodeId}__${tNodeId}`;
+          linksMap.set(linkKey, (linksMap.get(linkKey) || 0) + 1);
+        }
+      });
+
+      const nodes = Array.from(nodeMap.values());
+      const nodeIndexById = new Map();
+      nodes.forEach((n, i) => nodeIndexById.set(n.id, i));
+
+      const links = [];
+      linksMap.forEach((val, key) => {
+        const [sId, tId] = key.split('__');
+        if (nodeIndexById.has(sId) && nodeIndexById.has(tId)) {
+          links.push({
+            source: nodeIndexById.get(sId),
+            target: nodeIndexById.get(tId),
+            value: val,
+            sourceNodeId: sId,
+            targetNodeId: tId
+          });
+        }
+      });
+
+      if (nodes.length === 0 || links.length === 0) {
+        svg.append('text')
+          .attr('x', width / 2)
+          .attr('y', height / 2)
+          .attr('text-anchor', 'middle')
+          .attr('fill', '#80868b')
+          .attr('font-size', '14px')
+          .text('表示可能な経路がありません。表示オプションまたはフィルタを調整してください。');
+        document.getElementById('chartLoadingIndicator').classList.add('hidden');
+        return;
+      }
+
+      // Configure d3-sankey
+      const margin = { top: 20, right: 30, bottom: 20, left: 30 };
+      const sankey = d3.sankey()
+        .nodeWidth(14)
+        .nodePadding(18)
+        .extent([[margin.left, margin.top], [width - margin.right, height - margin.bottom]])
+        .iterations(32);
+
+      let graph;
+      try {
+        graph = sankey({
+          nodes: nodes.map(d => Object.assign({}, d)),
+          links: links.map(d => Object.assign({}, d))
+        });
+      } catch (err) {
+        console.error('Sankey Layout error:', err);
+        document.getElementById('chartLoadingIndicator').classList.add('hidden');
+        return;
+      }
+
+      const colorScale = d3.scaleOrdinal()
+        .range([
+          '#1a73e8', '#34a853', '#ea4335', '#f9ab00',
+          '#12b5cb', '#9334e6', '#fa7b17', '#e52592',
+          '#5f6368', '#4285f4'
+        ]);
+
+      function getNodeColor(d) {
+        if (d.name === 'その他') return '#9aa0a6';
+        if (d.name.includes('大変満足')) return '#1e8e3e';
+        if (d.name.includes('満足')) return '#34a853';
+        if (d.name.includes('普通')) return '#f9ab00';
+        if (d.name.includes('改善')) return '#ea4335';
+        if (d.name === '宮崎県内') return '#1a73e8';
+        if (d.name === '関東') return '#fa7b17';
+        if (d.name === '近畿') return '#9334e6';
+        if (d.name.includes('九州他県')) return '#12b5cb';
+        return colorScale(d.name);
+      }
+
+      const defs = svg.append('defs');
+
+      graph.links.forEach((link, i) => {
+        const gradId = `linkGrad_${i}`;
+        const grad = defs.append('linearGradient')
+          .attr('id', gradId)
+          .attr('gradientUnits', 'userSpaceOnUse')
+          .attr('x1', link.source.x1)
+          .attr('x2', link.target.x0);
+
+        grad.append('stop')
+          .attr('offset', '0%')
+          .attr('stop-color', getNodeColor(link.source))
+          .attr('stop-opacity', 0.45);
+
+        grad.append('stop')
+          .attr('offset', '100%')
+          .attr('stop-color', getNodeColor(link.target))
+          .attr('stop-opacity', 0.45);
+
+        link.gradientId = gradId;
+      });
+
+      // Draw Links
+      const linkGroup = svg.append('g')
+        .attr('class', 'links')
+        .attr('fill', 'none');
+
+      const linkPaths = linkGroup.selectAll('path')
+        .data(graph.links)
+        .enter()
+        .append('path')
+        .attr('class', 'sankey-link')
+        .attr('d', d3.sankeyLinkHorizontal())
+        .attr('stroke', d => `url(#${d.gradientId})`)
+        .attr('stroke-width', d => Math.max(1.8, d.width))
+        .attr('stroke-opacity', 0.4)
+        .on('mouseenter', function(event, d) {
+          d3.select(this).attr('stroke-opacity', 0.85);
+          const pctOfSource = ((d.value / d.source.value) * 100).toFixed(1);
+          const pctOfTotal = ((d.value / data.length) * 100).toFixed(1);
+          const safeSource = escapeHtml(d.source.name);
+          const safeTarget = escapeHtml(d.target.name);
+          
+          showTooltip(event, `
+            <div class="font-bold border-b border-gray-600 pb-1 mb-1 text-[12px] flex items-center justify-between">
+              <span>パス流量 (Flow)</span>
+              <span class="text-blue-300">${d.value} 人</span>
+            </div>
+            <div class="space-y-0.5 text-[11px]">
+              <div>起点: <b class="text-white">${safeSource}</b></div>
+              <div>到達: <b class="text-white">${safeTarget}</b></div>
+              <div class="text-gray-300 pt-1">前ステップ比: <span class="text-emerald-400 font-bold">${pctOfSource}%</span></div>
+              <div class="text-gray-300">全体構成比: <span class="text-blue-400 font-bold">${pctOfTotal}%</span></div>
+            </div>
+          `);
+        })
+        .on('mousemove', moveTooltip)
+        .on('mouseleave', function() {
+          d3.select(this).attr('stroke-opacity', 0.4);
+          hideTooltip();
+        });
+
+      // Draw Nodes
+      const nodeGroup = svg.append('g')
+        .attr('class', 'nodes');
+
+      const node = nodeGroup.selectAll('g')
+        .data(graph.nodes)
+        .enter()
+        .append('g')
+        .attr('class', 'node-item')
+        .attr('transform', d => `translate(${d.x0}, ${d.y0})`);
+
+      node.append('rect')
+        .attr('class', d => {
+          const isSelected = STATE.focusFilter && STATE.focusFilter.stepKey === d.stepKey && STATE.focusFilter.nodeName === d.name;
+          return `node-bar rounded-sm ${isSelected ? 'is-selected' : ''}`;
+        })
+        .attr('height', d => Math.max(3, d.y1 - d.y0))
+        .attr('width', d => d.x1 - d.x0)
+        .attr('rx', 2)
+        .attr('fill', d => getNodeColor(d))
+        .on('click', function(event, d) {
+          handleNodeClick(d);
+        })
+        .on('mouseenter', function(event, d) {
+          linkPaths.attr('stroke-opacity', l => (l.source === d || l.target === d) ? 0.85 : 0.1);
+          
+          const pctOfTotal = ((d.value / data.length) * 100).toFixed(1);
+          const safeTitle = escapeHtml(d.stepTitle || 'ノード');
+          const safeName = escapeHtml(d.name);
+
+          showTooltip(event, `
+            <div class="font-bold border-b border-gray-600 pb-1 mb-1 text-[12px] flex items-center justify-between gap-4">
+              <span>${safeTitle}: ${safeName}</span>
+              <span class="text-amber-400">${d.value} 人</span>
+            </div>
+            <div class="text-[11px] text-gray-300">
+              全体比: <b class="text-white">${pctOfTotal}%</b>
+            </div>
+            <div class="text-[10px] text-blue-300 mt-1">
+              ${d.name === 'その他' ? '※集約ノード' : 'クリックでこのノードに絞り込み探索'}
+            </div>
+          `);
+        })
+        .on('mousemove', moveTooltip)
+        .on('mouseleave', function() {
+          linkPaths.attr('stroke-opacity', 0.4);
+          hideTooltip();
+        });
+
+      node.each(function(d) {
+        const g = d3.select(this);
+        const nodeHeight = d.y1 - d.y0;
+        const isLeftHalf = d.x0 < width / 2;
+        const xOffset = isLeftHalf ? (d.x1 - d.x0 + 6) : -6;
+        const textAnchor = isLeftHalf ? 'start' : 'end';
+
+        const textGroup = g.append('g')
+          .attr('transform', `translate(${xOffset}, ${Math.min(nodeHeight / 2, 14)})`)
+          .style('cursor', 'pointer')
+          .on('click', () => handleNodeClick(d));
+
+        textGroup.append('text')
+          .attr('text-anchor', textAnchor)
+          .attr('y', -2)
+          .attr('fill', '#202124')
+          .attr('font-size', '11px')
+          .attr('font-weight', '500')
+          .text(d.name.length > 18 ? d.name.slice(0, 18) + '…' : d.name);
+
+        const pct = ((d.value / data.length) * 100).toFixed(1);
+        textGroup.append('text')
+          .attr('text-anchor', textAnchor)
+          .attr('y', 11)
+          .attr('fill', '#5f6368')
+          .attr('font-size', '10px')
+          .text(`${d.value.toLocaleString()}人 (${pct}%)`);
+      });
+
+      document.getElementById('chartLoadingIndicator').classList.add('hidden');
+    }
+
+    function renderStepHeaders(activeSteps, width) {
+      const container = document.getElementById('stepHeaderContainer');
+      container.innerHTML = '';
+      
+      const colWidth = width / activeSteps.length;
+
+      activeSteps.forEach((step, idx) => {
+        const headerCard = document.createElement('div');
+        headerCard.className = 'flex-1 bg-white border border-ga-border rounded px-3 py-2 mr-2 shadow-sm text-xs';
+        headerCard.style.maxWidth = `${colWidth}px`;
+
+        const stepBadge = idx === 0 
+          ? `<span class="bg-amber-100 text-amber-800 text-[10px] font-bold px-1.5 py-0.5 rounded mr-1.5">始点</span>`
+          : `<span class="bg-gray-100 text-gray-700 text-[10px] font-bold px-1.5 py-0.5 rounded mr-1.5">ステップ ${idx}</span>`;
+
+        const safeTitle = escapeHtml(step.title);
+        const safeKey = escapeHtml(step.key === 'residence' ? 'E列 居住地' : step.key);
+
+        headerCard.innerHTML = `
+          <div class="flex items-center justify-between text-gray-500 mb-0.5">
+            <div class="flex items-center">
+              ${stepBadge}
+              <span class="text-[11px] font-semibold text-gray-700 truncate">${safeTitle}</span>
+            </div>
+            <i data-lucide="chevron-right" class="w-3.5 h-3.5 text-gray-400"></i>
+          </div>
+          <div class="text-[10px] text-gray-500 truncate flex items-center justify-between mt-1">
+            <span>ディメンション: <b class="text-gray-800">${safeKey}</b></span>
+          </div>
+        `;
+        container.appendChild(headerCard);
+      });
+      lucide.createIcons();
+    }
+
+    function handleNodeClick(nodeData) {
+      if (nodeData.name === 'その他') {
+        showToast('「その他」は集約ノードのため単体フィルタリングの対象外です', 'info');
+        return;
+      }
+
+      if (STATE.focusFilter && STATE.focusFilter.nodeName === nodeData.name && STATE.focusFilter.stepKey === nodeData.stepKey) {
+        STATE.focusFilter = null;
+      } else {
+        STATE.focusFilter = {
+          stepKey: nodeData.stepKey,
+          stepTitle: nodeData.stepTitle,
+          nodeName: nodeData.name
+        };
+      }
+      applyFiltersAndRender();
+    }
+
+    function clearFocusFilter() {
+      STATE.focusFilter = null;
+      applyFiltersAndRender();
+    }
+
+    const tooltipEl = document.getElementById('gaTooltip');
+
+    function showTooltip(event, htmlContent) {
+      tooltipEl.innerHTML = htmlContent;
+      tooltipEl.style.opacity = '1';
+      moveTooltip(event);
+    }
+
+    function moveTooltip(event) {
+      const pad = 14;
+      let x = event.pageX + pad;
+      let y = event.pageY + pad;
+      if (x + 240 > window.innerWidth) x = event.pageX - 240;
+      tooltipEl.style.left = `${x}px`;
+      tooltipEl.style.top = `${y}px`;
+    }
+
+    function hideTooltip() {
+      tooltipEl.style.opacity = '0';
+    }
+
+    function showToast(message, type = 'info') {
+      const toast = document.createElement('div');
+      toast.className = `fixed bottom-5 right-5 z-50 px-4 py-2.5 rounded-lg text-xs font-medium shadow-lg transition-all transform duration-200 ${
+        type === 'error' ? 'bg-red-600 text-white' : type === 'success' ? 'bg-emerald-600 text-white' : 'bg-gray-800 text-white'
+      }`;
+      toast.innerText = message;
+      document.body.appendChild(toast);
+      setTimeout(() => {
+        toast.style.opacity = '0';
+        setTimeout(() => toast.remove(), 300);
+      }, 3500);
+    }
+
+    /**
+     * Exports current aggregated flow table as CSV
+     */
+    function exportAggregatedFlows() {
+      const data = STATE.filteredData;
+      if (!data || data.length === 0) {
+        showToast('エクスポートするデータがありません', 'error');
+        return;
+      }
+
+      let csvContent = "data:text/csv;charset=utf-8,\uFEFF";
+      csvContent += "ID,E列_居住地,居住地方区分,主な交通手段,参加日程,宿泊形態,会場アクセス,満足度\n";
+
+      data.forEach(d => {
+        const region = getRegionFromPref(d.residence);
+        const escapeCsvCell = (val) => `"${String(val ?? '').replace(/"/g, '""')}"`;
+        const row = [
+          d.id,
+          escapeCsvCell(d.residence),
+          escapeCsvCell(region),
+          escapeCsvCell(d.transport),
+          escapeCsvCell(d.schedule),
+          escapeCsvCell(d.stayType),
+          escapeCsvCell(d.venueAccess),
+          escapeCsvCell(d.satisfaction)
+        ].join(',');
+        csvContent += row + "\n";
+      });
+
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement('a');
+      link.setAttribute('href', encodedUri);
+      link.setAttribute('download', `ひなたフェス_経路探索結果_${new Date().toISOString().slice(0, 10)}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      showToast('集計CSVファイルをダウンロードしました', 'success');
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      lucide.createIcons();
+
+      STATE.rawData = generateHinataFesMockData(1200);
+      applyFiltersAndRender();
+
+      // CSV File Upload Input
+      const fileInput = document.getElementById('csvFileInput');
+      fileInput.addEventListener('change', (e) => {
+        if (e.target.files && e.target.files[0]) {
+          handleCsvUpload(e.target.files[0]);
+        }
+      });
+
+      // Drag and drop setup
+      const overlay = document.getElementById('dragDropOverlay');
+      window.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        overlay.classList.remove('hidden');
+      });
+      window.addEventListener('dragleave', (e) => {
+        if (e.clientX <= 0 || e.clientY <= 0) {
+          overlay.classList.add('hidden');
+        }
+      });
+      window.addEventListener('drop', (e) => {
+        e.preventDefault();
+        overlay.classList.add('hidden');
+        if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+          handleCsvUpload(e.dataTransfer.files[0]);
+        }
+      });
+
+      // Residence Granularity radio
+      document.querySelectorAll('input[name="residenceGranularity"]').forEach(radio => {
+        radio.addEventListener('change', (e) => {
+          STATE.granularity = e.target.value;
+          if (STATE.focusFilter && STATE.focusFilter.stepKey === 'residence') {
+            STATE.focusFilter = null;
+          }
+          document.getElementById('step0Label').innerText = 
+            STATE.granularity === 'region' ? '居住地（地方ブロック）' : '居住地（都道府県）';
+          applyFiltersAndRender();
+        });
+      });
+
+      // Segment selector
+      document.getElementById('segmentSelect').addEventListener('change', (e) => {
+        STATE.selectedSegment = e.target.value;
+        applyFiltersAndRender();
+      });
+
+      // Node Limit selector
+      document.getElementById('nodeLimitSelect').addEventListener('change', (e) => {
+        STATE.nodeLimit = parseInt(e.target.value, 10);
+        applyFiltersAndRender();
+      });
+
+      // Show Dropoffs checkbox
+      document.getElementById('showDropoffs').addEventListener('change', (e) => {
+        STATE.showDropoffs = e.target.checked;
+        applyFiltersAndRender();
+      });
+
+      // Step dimension changers
+      document.querySelectorAll('.step-dim-selector').forEach(sel => {
+        sel.addEventListener('change', (e) => {
+          const stepNum = parseInt(e.target.dataset.step, 10);
+          const chosenKey = e.target.value;
+          const chosenTitle = e.target.options[e.target.selectedIndex].text.split('(')[0].trim();
+          
+          STATE.steps[stepNum].key = chosenKey;
+          STATE.steps[stepNum].title = chosenTitle;
+          applyFiltersAndRender();
+        });
+      });
+
+      // Reverse Path button
+      document.getElementById('toggleReverseBtn').addEventListener('click', () => {
+        STATE.reversePath = !STATE.reversePath;
+        applyFiltersAndRender();
+        showToast(STATE.reversePath ? '終点（満足度）からの逆引きフローに反転しました' : '始点（居住地）からの順方向フローに戻しました');
+      });
+
+      // Reset path button
+      document.getElementById('resetPathBtn').addEventListener('click', () => {
+        clearFocusFilter();
+      });
+
+      // Export summary button
+      document.getElementById('exportCsvSummaryBtn').addEventListener('click', () => {
+        exportAggregatedFlows();
+      });
+
+      // Window resize handling
+      let resizeTimer;
+      window.addEventListener('resize', () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          renderSankeyChart();
+        }, 150);
+      });
+    });
+  </script>
+</body>
+</html>
